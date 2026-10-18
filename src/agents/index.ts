@@ -4,6 +4,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { createLLMClient, listAvailableLLMProviders, type LLMClient } from '../providers/llm-client';
 import { spawn, spawnSync, ChildProcess, execSync, execFileSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import { generateId as generateSecureId } from '../utils/id';
@@ -46,7 +47,7 @@ import { createSqlTool, SqlTool } from '../tools/sql';
 import { WebhookTool } from '../tools/webhooks';
 import { createDockerTool, DockerTool } from '../tools/docker';
 import { createEmbeddingsService, EmbeddingsService } from '../embeddings';
-import { selectAdaptiveModel, getModelStrategy } from '../models';
+import { selectAdaptiveModel, getModelStrategy, stripProviderPrefix } from '../models';
 import { createSubagentManager, SubagentManager, ToolExecutor } from './subagents';
 import { createFileTool, FileTool } from '../tools/files';
 import { createShellHistoryTool, ShellHistoryTool } from '../tools/shell-history';
@@ -443,7 +444,7 @@ function limitItems<T extends { key?: string; value?: string }>(items: T[] | und
 }
 
 async function extractMemoryWithClaude(
-  client: Anthropic,
+  client: LLMClient,
   text: string,
   maxItems: number
 ): Promise<MemoryExtractionResult | null> {
@@ -16957,12 +16958,15 @@ export async function createAgentManager(
   webhookToolProvider?: () => WebhookTool | undefined,
   executionService?: ExecutionServiceRef | null
 ): Promise<AgentManager> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error('ANTHROPIC_API_KEY environment variable is required');
+  if (listAvailableLLMProviders().length === 0) {
+    throw new Error(
+      'No LLM provider configured. Set ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY or another provider key in .env',
+    );
   }
 
-  const client = new Anthropic({ apiKey });
+  // Anthropic-shaped client that routes each request to the provider resolved from its
+  // model reference (`provider/model`, AUTOPILOT_LLM_PROVIDER, or model-name inference).
+  const client = createLLMClient();
   const skills = createSkillManager(config.agents.defaults.workspace);
   let credentials: CredentialsManager;
   try {
@@ -17522,8 +17526,19 @@ export async function createAgentManager(
         'claude-haiku-3-5-20250514': 200000,
         'claude-3-5-sonnet-20241022': 200000,
         'claude-3-opus-20240229': 200000,
+        // Non-Anthropic providers (reached as `provider/model` or a bare model id)
+        'gemini-2.5-flash': 1048576,
+        'gemini-2.5-pro': 1048576,
+        'gemini-2.0-flash': 1048576,
+        'gemini-1.5-pro': 2097152,
+        'gpt-4o': 128000,
+        'gpt-4o-mini': 128000,
+        'gpt-4.1': 1047576,
+        'llama-3.3-70b-versatile': 128000,
+        llama3: 8192,
       };
-      const modelContextWindow = MODEL_CONTEXT_WINDOWS[modelId] || 200000;
+      const modelContextWindow =
+        MODEL_CONTEXT_WINDOWS[modelId] ?? MODEL_CONTEXT_WINDOWS[stripProviderPrefix(modelId)] ?? 200000;
 
       // Reserve space for system prompt + response buffer.
       // Tool tokens are NOT included here because client-side estimation of tool

@@ -8,5 +8,5 @@ export {
 } from './failover';
 export type { FailoverConfig, ModelFailover } from './failover';
 
-export { selectAdaptiveModel, getModelStrategy } from './adaptive';
+export { selectAdaptiveModel, getModelStrategy, stripProviderPrefix } from './adaptive';
 export type { AdaptiveModelInput, ModelStrategy } from './adaptive';

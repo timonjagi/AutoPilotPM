@@ -18,6 +18,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { logger } from '../utils/logger';
 import Anthropic from '@anthropic-ai/sdk';
+import { createLLMClient, listAvailableLLMProviders, type LLMClient } from '../providers/llm-client';
 
 // =============================================================================
 // TYPES
@@ -468,8 +469,8 @@ export interface SubagentManager {
   getRegistry(): RunRegistry;
   /** Set result announcer callback */
   setAnnouncer(fn: (state: SubagentState) => Promise<void>): void;
-  /** Set Anthropic client */
-  setClient(client: Anthropic): void;
+  /** Set the LLM client used for subagent turns (Anthropic-shaped, provider-routed) */
+  setClient(client: LLMClient): void;
 }
 
 /**
@@ -478,7 +479,7 @@ export interface SubagentManager {
 export function createSubagentManager(): SubagentManager {
   const registry = createRunRegistry();
   let announcer: ((state: SubagentState) => Promise<void>) | null = null;
-  let anthropicClient: Anthropic | null = null;
+  let anthropicClient: LLMClient | null = null;
 
   /**
    * Create initial state for a new run
@@ -542,19 +543,18 @@ export function createSubagentManager(): SubagentManager {
 
     // Ensure we have a client
     if (!anthropicClient) {
-      const apiKey = process.env.ANTHROPIC_API_KEY;
-      if (!apiKey) {
+      if (listAvailableLLMProviders().length === 0) {
         state.status = 'failed';
         state.error = {
-          message: 'ANTHROPIC_API_KEY not set',
+          message: 'No LLM provider configured (set ANTHROPIC_API_KEY or GEMINI_API_KEY)',
           category: 'auth',
           retryable: false,
         };
         saveSubagentState(state);
-        run.events.emit('error', new Error('ANTHROPIC_API_KEY not set'));
+        run.events.emit('error', new Error('No LLM provider configured'));
         return state;
       }
-      anthropicClient = new Anthropic({ apiKey });
+      anthropicClient = createLLMClient();
     }
 
     const model = state.config.model || 'claude-sonnet-4-6';

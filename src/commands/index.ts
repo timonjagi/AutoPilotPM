@@ -18,6 +18,7 @@ import { Session, IncomingMessage } from '../types';
 import { logger } from '../utils/logger';
 import { SkillRegistry, InstalledSkill } from '../skills/index';
 import { executeSkillCommand, isSkillCommand } from '../skills/executor';
+import { isModelRefSupported, listAvailableLLMProviders } from '../providers/llm-client';
 
 export interface CommandResult {
   handled: boolean;
@@ -253,13 +254,18 @@ export function createCommandsService(
           const requestedModel = args[0].toLowerCase();
           const resolvedModel = MODEL_ALIASES[requestedModel] || requestedModel;
 
-          // Validate it looks like a Claude model
-          if (!resolvedModel.startsWith('claude-')) {
+          // Validate the model reference: claude-*, gemini-*, gpt-*, or `provider/model`
+          if (!isModelRefSupported(resolvedModel)) {
+            const providers = listAvailableLLMProviders();
+            const others = providers.filter((p) => p !== 'anthropic');
             return {
               handled: true,
               response:
                 `❌ Unknown model: \`${requestedModel}\`\n\n` +
-                `*Available:* sonnet, opus, haiku`,
+                `*Available:* sonnet, opus, haiku` +
+                (others.length
+                  ? `, or \`provider/model\` — e.g. \`${others[0]}/...\` (configured: ${others.join(', ')})`
+                  : ''),
             };
           }
 

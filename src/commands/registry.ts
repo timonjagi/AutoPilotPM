@@ -14,6 +14,7 @@ import type { OpportunityFinder } from '../opportunity/index';
 import { planLinkedVenueArbitrage, planOpportunityHft } from '../opportunity/hft';
 import { logger } from '../utils/logger';
 import { execApprovals } from '../permissions';
+import { isModelRefSupported } from '../providers/llm-client';
 import * as virtuals from '../evm/virtuals';
 import * as wallet from '../evm/wallet';
 import * as multichain from '../evm/multichain';
@@ -1023,7 +1024,7 @@ export function createDefaultCommands(): CommandDefinition[] {
     {
       name: 'model',
       description: 'Show or change the current model',
-      usage: '/model [sonnet|opus|haiku|claude-...]',
+      usage: '/model [sonnet|opus|haiku|claude-...|gemini/gemini-2.5-flash|gpt-4o]',
       handler: (args, ctx) => {
         const defaultModel = process.env.ANTHROPIC_MODEL || 'claude-opus-4-6';
         const currentModel =
@@ -1045,8 +1046,8 @@ export function createDefaultCommands(): CommandDefinition[] {
         };
 
         const resolved = aliases[requested] || requested;
-        if (!resolved.startsWith('claude-')) {
-          return 'Unknown model. Try: sonnet, opus, haiku.';
+        if (!isModelRefSupported(resolved)) {
+          return 'Unknown model. Try: sonnet, opus, haiku, gpt-4o, gemini/gemini-2.5-flash.';
         }
 
         ctx.session.context.modelOverride = resolved;

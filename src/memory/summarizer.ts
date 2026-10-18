@@ -1,9 +1,11 @@
 /**
- * Claude-powered summarization for context compaction
+ * Summarization for context compaction — provider-agnostic (Anthropic by default,
+ * any configured provider when the Anthropic key is absent).
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '../utils/logger';
+import Anthropic from '@anthropic-ai/sdk';
+import { createLLMClient, resolveLLMRoute, MissingProviderKeyError } from '../providers/llm-client';
 
 export type SummarizerFn = (text: string, maxTokens: number) => Promise<string>;
 
@@ -15,11 +17,20 @@ interface ClaudeSummarizerOptions {
 const DEFAULT_SUMMARY_MODEL = process.env.AUTOPILOT_SUMMARY_MODEL || 'claude-haiku-4-5-20251001';
 
 export function createClaudeSummarizer(options: ClaudeSummarizerOptions = {}): SummarizerFn | undefined {
-  const apiKey = options.apiKey || process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return undefined;
+  let model: string;
+  try {
+    // Resolves the route once: anthropic/claude-... natively, or the configured
+    // provider's default model when only Gemini/OpenAI/etc. keys are present.
+    model = resolveLLMRoute(options.model || DEFAULT_SUMMARY_MODEL).model;
+  } catch (err) {
+    if (err instanceof MissingProviderKeyError) {
+      logger.debug({ err: err.message }, 'No summarizer provider available — compaction will truncate');
+      return undefined;
+    }
+    throw err;
+  }
 
-  const client = new Anthropic({ apiKey });
-  const model = options.model || DEFAULT_SUMMARY_MODEL;
+  const client = createLLMClient();
 
   return async (text: string, maxTokens: number): Promise<string> => {
     const targetTokens = Math.max(128, Math.min(1200, Math.floor(maxTokens)));
@@ -50,7 +61,7 @@ export function createClaudeSummarizer(options: ClaudeSummarizerOptions = {}): S
 
       return summary || '[Summary unavailable]';
     } catch (error) {
-      logger.warn({ error }, 'Claude summarizer failed, falling back to naive summary');
+      logger.warn({ error }, 'Summarizer failed, falling back to naive summary');
       // Naive fallback: truncate the input.
       const maxChars = targetTokens * 4;
       return text.length > maxChars ? `${text.slice(0, maxChars)}\n\n[...truncated]` : text;
