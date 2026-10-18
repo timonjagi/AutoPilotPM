@@ -278,19 +278,30 @@ export function resolveLLMRoute(
   modelRef: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): LLMRoute {
-  const raw = (modelRef || '').trim();
+  let raw = (modelRef || '').trim();
 
   // 1. Explicit `provider/model` prefix wins over everything.
   const explicit = parseExplicitPrefix(raw);
   if (explicit) {
-    if (!isProviderAvailable(explicit.provider, env)) {
+    if (isProviderAvailable(explicit.provider, env)) {
+      const model =
+        explicit.rest && fitsProvider(explicit.provider, explicit.rest)
+          ? explicit.rest
+          : defaultModelFor(explicit.provider, env);
+      return { provider: explicit.provider, model, explicit: true };
+    }
+    // The named provider has no credentials. Fall back to whatever is configured
+    // rather than hard-failing: `anthropic/claude-opus-4-6` is the *shipped default*
+    // primary, so a user who only adds GEMINI_API_KEY must not hit a wall on their
+    // first message. Still fail loudly when nothing at all is configured.
+    if (listAvailableLLMProviders(env).length === 0) {
       throw new MissingProviderKeyError(missingKeyMessage(explicit.provider, env));
     }
-    const model =
-      explicit.rest && fitsProvider(explicit.provider, explicit.rest)
-        ? explicit.rest
-        : defaultModelFor(explicit.provider, env);
-    return { provider: explicit.provider, model, explicit: true };
+    logger.warn(
+      { requested: raw, unavailableProvider: explicit.provider },
+      'Requested provider has no credentials — falling back to a configured provider',
+    );
+    raw = explicit.rest || raw;
   }
 
   const forced = normalizeProviderId(env.AUTOPILOT_LLM_PROVIDER);

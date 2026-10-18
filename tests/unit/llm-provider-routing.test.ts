@@ -49,6 +49,22 @@ test('explicit prefix for a provider without credentials throws', () => {
   assert.throws(() => resolveLLMRoute('gemini/gemini-2.5-flash', env), MissingProviderKeyError);
 });
 
+test('the default anthropic/ prefix falls back instead of blocking a Gemini-only setup', () => {
+  // `anthropic/claude-opus-4-6` is the shipped DEFAULT_CONFIG primary, not something
+  // the user typed — so adding only GEMINI_API_KEY must not fail the first message.
+  const env = { GEMINI_API_KEY: 'g-key' } as NodeJS.ProcessEnv;
+  const route = resolveLLMRoute('anthropic/claude-opus-4-6', env);
+  assert.equal(route.provider, 'gemini');
+  assert.equal(route.model, 'gemini-2.5-flash');
+  assert.equal(route.explicit, false);
+
+  // ...but an explicit prefix is still honoured when its provider IS configured.
+  const both = { ANTHROPIC_API_KEY: 'a-key', GEMINI_API_KEY: 'g-key' } as NodeJS.ProcessEnv;
+  const honoured = resolveLLMRoute('anthropic/claude-opus-4-6', both);
+  assert.equal(honoured.provider, 'anthropic');
+  assert.equal(honoured.explicit, true);
+});
+
 test('known model ids infer their provider', () => {
   assert.equal(inferProviderFromModel('claude-sonnet-4-6'), 'anthropic');
   assert.equal(inferProviderFromModel('gemini-2.5-flash'), 'gemini');
