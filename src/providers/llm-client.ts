@@ -762,6 +762,13 @@ export function sanitizeGeminiSchema(schema: unknown): Record<string, unknown> |
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
       if (drop.has(key)) continue;
+      // Gemini's schema subset only accepts string enum members and rejects a numeric
+      // one with a 400 whatever the declared type is (verified live: `type: number` and
+      // `type: string` both fail). Dropping the enum keeps the declared type intact so
+      // the tool still receives a number instead of the "60" that stringifying would
+      // produce — and these tools already spell the allowed values out in the
+      // description, which is the part the model actually reads.
+      if (key === 'enum' && Array.isArray(child) && child.some((v) => typeof v !== 'string')) continue;
       out[key] = walk(child);
     }
     return out;

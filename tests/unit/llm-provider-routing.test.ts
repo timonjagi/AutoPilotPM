@@ -390,6 +390,39 @@ test('gemini sanitizes tool names and schema keywords', () => {
   assert.equal(schema.title, undefined);
 });
 
+// Gemini only accepts string enum members. A numeric one is a 400 regardless of the
+// declared type (both `type: 'number'` and `type: 'string'` were rejected live), so a
+// numeric enum has to go — but the type must stay, or the tool receives a string where
+// it expects a number.
+test('gemini schema drops non-string enums but keeps the declared type', () => {
+  const schema = sanitizeGeminiSchema({
+    type: 'object',
+    properties: {
+      interval: { type: 'number', description: 'Interval: 1 (1min), 60 (1hr), or 1440 (1day)', enum: [1, 60, 1440] },
+      outcome: { type: 'number', enum: [0, 1] },
+    },
+    required: ['interval'],
+  })!;
+
+  const interval = (schema as any).properties.interval;
+  assert.equal('enum' in interval, false, 'numeric enum must be dropped');
+  assert.equal(interval.type, 'number', 'declared type must survive');
+  assert.equal(interval.description, 'Interval: 1 (1min), 60 (1hr), or 1440 (1day)');
+  assert.equal('enum' in (schema as any).properties.outcome, false);
+});
+
+test('gemini schema keeps string enums untouched', () => {
+  const schema = sanitizeGeminiSchema({
+    type: 'object',
+    properties: {
+      platform: { type: 'string', enum: ['polymarket', 'kalshi'] },
+      flag: { type: 'string', enum: ['on', 'off'] },
+    },
+  })!;
+  assert.deepEqual((schema as any).properties.platform.enum, ['polymarket', 'kalshi']);
+  assert.deepEqual((schema as any).properties.flag.enum, ['on', 'off']);
+});
+
 test('gemini responses convert function calls to anthropic tool_use blocks', () => {
   const params = anthropicParams();
   params.tools = [
