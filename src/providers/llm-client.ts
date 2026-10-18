@@ -800,6 +800,13 @@ export function buildGeminiRequestBody(params: AnthropicParams): GeminiRequestBo
                 ? safeParseJSONObject(block.input)
                 : (block.input as Record<string, unknown>) ?? {},
           },
+          // Required by Gemini 3.x: a replayed function call without its signature is a
+          // 400. The signature rides as a sibling of functionCall, exactly as Gemini
+          // returned it. Calls synthesized by us (or by Anthropic) have none — omitting
+          // is correct there, since there is no signature to lose.
+          ...(typeof block.thought_signature === 'string' && block.thought_signature
+            ? { thoughtSignature: block.thought_signature }
+            : {}),
         });
       } else if (block.type === 'tool_result') {
         const originalName = toolNames.get(String(block.tool_use_id)) || 'unknown_tool';
@@ -879,6 +886,14 @@ export function messageFromGemini(json: any, model: string, params?: AnthropicPa
         id: `toolu_${randomUUID().replace(/-/g, '')}`,
         name: declared.get(wireName) || toolNames.get(wireName) || wireName,
         input: (part.functionCall.args as Record<string, unknown>) ?? {},
+        // Gemini 3.x ships the signature as a *sibling* of functionCall and rejects a
+        // replayed call that omits it (400 "missing a thought_signature"). Anthropic's
+        // wire format has nowhere to put it, so park it on the block and send it back in
+        // buildGeminiRequestBody. Text parts don't require one (verified live) and lose
+        // fidelity when merged, so only calls round-trip a signature.
+        ...(typeof part.thoughtSignature === 'string' && part.thoughtSignature
+          ? { thought_signature: part.thoughtSignature }
+          : {}),
       });
     }
   }
@@ -907,7 +922,9 @@ export function messageFromGemini(json: any, model: string, params?: AnthropicPa
 /** Incrementally folds Gemini streaming chunks into an Anthropic-shaped message. */
 export class GeminiStreamAccumulator {
   private textParts: string[] = [];
-  private toolCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  private toolCalls: Array<{ name: string; args: Record<string, unknown>; signature?: string }> = [];
+  /** Signature seen before its functionCall chunk arrived (chunks are unordered). */
+  private pendingSignature?: string;
   private finishReason?: string;
   private inputTokens = 0;
   private outputTokens = 0;
@@ -920,10 +937,22 @@ export class GeminiStreamAccumulator {
         this.textParts.push(part.text);
         delta += part.text;
       } else if (part.functionCall) {
+        const own =
+          typeof part.thoughtSignature === 'string' && part.thoughtSignature
+            ? part.thoughtSignature
+            : this.pendingSignature;
         this.toolCalls.push({
           name: String(part.functionCall.name || ''),
           args: (part.functionCall.args as Record<string, unknown>) ?? {},
+          ...(own ? { signature: own } : {}),
         });
+        this.pendingSignature = undefined;
+      } else if (typeof part.thoughtSignature === 'string' && part.thoughtSignature) {
+        // Signature arrived as its own part: pair it with the most recent unsigned call,
+        // or hold it until the call chunk shows up.
+        const pending = [...this.toolCalls].reverse().find((c) => !c.signature);
+        if (pending) pending.signature = part.thoughtSignature;
+        else this.pendingSignature = part.thoughtSignature;
       }
     }
     if (typeof candidate?.finishReason === 'string' && candidate.finishReason) {
@@ -958,6 +987,7 @@ export class GeminiStreamAccumulator {
         id: `toolu_${randomUUID().replace(/-/g, '')}`,
         name: declared.get(call.name) || call.name,
         input: call.args,
+        ...(call.signature ? { thought_signature: call.signature } : {}),
       });
     }
     if (blocks.length === 0) blocks.push({ type: 'text', text: '' });

@@ -430,6 +430,125 @@ test('gemini stream accumulator folds text deltas', () => {
   assert.equal((message.content[0] as { text: string }).text, 'Hi there');
 });
 
+// Gemini 3.x rejects a replayed function call that omits its thought_signature with a
+// 400, so the signature has to survive the round trip through Anthropic's block shape.
+// It rides as a *sibling* of functionCall, nowhere inside it.
+
+test('gemini non-stream response parks the thought_signature on the tool_use block', () => {
+  const message = messageFromGemini(
+    {
+      candidates: [
+        {
+          content: {
+            role: 'model',
+            parts: [
+              { functionCall: { name: 'get_weather', args: { city: 'Tokyo' } }, thoughtSignature: 'sig-abc' },
+            ],
+          },
+          finishReason: 'STOP',
+        },
+      ],
+    },
+    'gemini-3.8-flash',
+  );
+  const block = message.content[0] as { type: string; thought_signature?: string };
+  assert.equal(block.type, 'tool_use');
+  assert.equal(block.thought_signature, 'sig-abc');
+});
+
+test('gemini tool_use blocks without a signature simply carry none', () => {
+  const message = messageFromGemini(
+    {
+      candidates: [
+        { content: { role: 'model', parts: [{ functionCall: { name: 'get_weather', args: {} } }] } },
+      ],
+    },
+    'gemini-3.8-flash',
+  );
+  assert.equal('thought_signature' in (message.content[0] as object), false);
+});
+
+test('gemini request body replays the thought_signature as a sibling of functionCall', () => {
+  const body = buildGeminiRequestBody({
+    model: 'gemini-3.8-flash',
+    max_tokens: 128,
+    messages: [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'weather?' }],
+      },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_1',
+            name: 'get_weather',
+            input: { city: 'Tokyo' },
+            thought_signature: 'sig-abc',
+          } as any,
+        ],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '{"temp":21}' }] as any,
+      },
+    ],
+    tools: [{ name: 'get_weather', description: 'd', input_schema: { type: 'object' } }] as Anthropic.Tool[],
+  });
+
+  const modelTurn = body.contents.find((c) => c.role === 'model')!;
+  const callPart = modelTurn.parts.find((p: any) => p.functionCall)!;
+  assert.equal(callPart.thoughtSignature, 'sig-abc');
+  assert.deepEqual(callPart.functionCall.args, { city: 'Tokyo' });
+
+  // A block with no signature must not grow a bogus one.
+  const unsigned = buildGeminiRequestBody({
+    model: 'gemini-3.8-flash',
+    max_tokens: 128,
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'toolu_2', name: 'get_weather', input: { city: 'Oslo' } } as any,
+        ],
+      },
+    ],
+    tools: [{ name: 'get_weather', description: 'd', input_schema: { type: 'object' } }] as Anthropic.Tool[],
+  });
+  const unsignedPart = unsigned.contents.find((c: any) => c.role === 'model')!.parts.find((p: any) => p.functionCall)!;
+  assert.equal('thoughtSignature' in unsignedPart, false);
+});
+
+test('gemini stream accumulator captures a signature arriving with the call', () => {
+  const accumulator = new GeminiStreamAccumulator();
+  accumulator.push({
+    candidates: [
+      {
+        content: {
+          parts: [
+            { functionCall: { name: 'get_weather', args: { city: 'Tokyo' } }, thoughtSignature: 'sig-xyz' },
+          ],
+        },
+      },
+    ],
+  });
+  const message = accumulator.finish('gemini-3.8-flash');
+  const block = message.content[0] as { type: string; thought_signature?: string };
+  assert.equal(block.type, 'tool_use');
+  assert.equal(block.thought_signature, 'sig-xyz');
+});
+
+test('gemini stream accumulator pairs a signature that arrives before its call', () => {
+  const accumulator = new GeminiStreamAccumulator();
+  accumulator.push({ candidates: [{ content: { parts: [{ thoughtSignature: 'sig-late' }] } }] });
+  accumulator.push({
+    candidates: [{ content: { parts: [{ functionCall: { name: 'get_weather', args: {} } }] } }],
+  });
+  const message = accumulator.finish('gemini-3.8-flash');
+  assert.equal((message.content[0] as { thought_signature?: string }).thought_signature, 'sig-late');
+});
+
 // =============================================================================
 // CLIENT DISPATCH (mocked network)
 // =============================================================================
